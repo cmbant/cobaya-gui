@@ -1,75 +1,40 @@
-# --- Page Config MUST be the first Streamlit command ---
 import streamlit as st
+import os
+import numpy as np
+import io
+from typing import Dict, List, Any, Optional
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import colormaps
+from pprint import pformat
+
+from cobaya.yaml import yaml_dump, yaml_load
+from cobaya.bib import pretty_repr_bib, get_bib_info, get_bib_component
+from cobaya.tools import get_available_internal_class_names, \
+    cov_to_std_and_corr, resolve_packages_path, sort_cosmetic
+from cobaya.input import get_default_info
+from cobaya.conventions import kinds, packages_path_env, packages_path_input
+from cobaya.cosmo_input.input_database import _combo_dict_text
+from cobaya.cosmo_input import input_database
+from cobaya.cosmo_input.autoselect_covmat import get_best_covmat, covmat_folders
+from cobaya.cosmo_input.create_input import create_input
+
+
 st.set_page_config(
     page_title="Cobaya Input Generator",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Global imports (keep these here)
-import os
-import sys
-import platform
-import numpy as np
-import io
-from typing import Dict, List, Any, Optional
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib import colormaps
-from pprint import pformat
+NONE_PRESET_KEY = '(None)'
 
-# --- Now attempt Cobaya imports and handle errors ---
-try:
-    from cobaya.yaml import yaml_dump, yaml_load
-    from cobaya.bib import pretty_repr_bib, get_bib_info, get_bib_component
-    from cobaya.tools import warn_deprecation, get_available_internal_class_names, \
-        cov_to_std_and_corr, resolve_packages_path, sort_cosmetic
-    from cobaya.input import get_default_info
-    from cobaya.conventions import subfolders, kinds, packages_path_env, packages_path_input
-
-    # Import these after the basic imports to avoid circular dependencies
-    from cobaya.cosmo_input.input_database import _combo_dict_text
-    from cobaya.cosmo_input import input_database
-    from cobaya.cosmo_input.autoselect_covmat import get_best_covmat, covmat_folders
-    from cobaya.cosmo_input.create_input import create_input
-
-    # Find the internal key representing 'None' for presets
-    # The 'none' variable is defined in input_database.py as '(None)'
-    NONE_PRESET_KEY = next((k for k, v in input_database.preset.items() if v.get('desc') == '(No preset chosen)'), None)
-    if NONE_PRESET_KEY is None:
-        # This warning is now safe to call
-        st.warning("Could not determine the 'None' key for presets in input_database. Assuming '(None)'.")
-        NONE_PRESET_KEY = '(None)' # Fallback
-
-    # Mark Cobaya as loaded successfully
-    COBAYA_LOADED = True
-
-except ImportError as e:
-    # These error messages are now safe to call
-    st.error(f"Cobaya library not found or import error: {e}")
-    st.error("Please ensure Cobaya is installed in your environment (`pip install cobaya`)")
-    st.markdown("---")
-    st.warning("Cannot proceed without Cobaya.")
-    COBAYA_LOADED = False
-    st.stop() # Stop execution if cobaya is not available
-
-# --- Helper Functions (can stay here) ---
 def text(key, contents):
     """Get description text for a key, or the key itself if no description exists."""
     desc = (contents or {}).get("desc")
     return desc or key
 
-# --- Core Logic Functions (can stay here, but only run if COBAYA_LOADED) ---
-# (update_input_and_covmat, handle_preset_change, save_covmat_txt)
-# Make sure these functions are defined before being called in streamlit_gui
-
-# --- Define Core Logic Functions ---
-# (Paste the definitions of update_input_and_covmat, handle_preset_change, save_covmat_txt here)
-# --- Example placeholder for function definitions ---
 def update_input_and_covmat():
     """Generates Cobaya input and fetches covmat based on current session state selections."""
-    if not COBAYA_LOADED: return # Should not happen if st.stop() worked, but good practice
     try:
         # Use the selections *excluding* the 'preset' key itself for generation
         current_selections = st.session_state.get('selections', {})
@@ -93,7 +58,7 @@ def update_input_and_covmat():
         )
         st.session_state.current_info = info
 
-        # --- Covmat Logic ---
+      # --- Covmat Logic ---
         packages_path = resolve_packages_path()
         covmat_data = None
         covmat_message = ""
@@ -103,7 +68,7 @@ def update_input_and_covmat():
                 f"Could not find packages path. Define it via env var '{packages_path_env}' "
                 f"or input key '{packages_path_input}' to enable automatic covmat finding."
             )
-        elif any(not os.path.isdir(d.format(**{packages_path_input: packages_path}))
+        elif all(not os.path.isdir(d.format(**{packages_path_input: packages_path}))
                  for d in covmat_folders):
             covmat_message = (
                 f"External packages path found ({packages_path}), but expected "
@@ -142,7 +107,6 @@ def update_input_and_covmat():
 
 def handle_preset_change():
     """Callback function when the preset selection changes."""
-    if not COBAYA_LOADED: return
     selected_preset_text = st.session_state.select_preset
     preset_options_dict = getattr(input_database, "preset")
     preset_option_keys = list(preset_options_dict.keys())
@@ -173,9 +137,36 @@ def handle_preset_change():
     st.session_state.last_error_preset = None
 
 
+def create_field_callback(field_name):
+    """Create a callback function for a specific field."""
+    def callback():
+        # Get the selected text from session state
+        selected_text = st.session_state[f"select_{field_name}"]
+
+        # Get the options for this field
+        options_dict = getattr(input_database, field_name)
+        option_keys = list(options_dict.keys())
+        option_texts = [text(k, v) for k, v in options_dict.items()]
+
+        try:
+            # Map the selected text back to the key
+            new_selection_key = option_keys[option_texts.index(selected_text)]
+        except ValueError:
+            st.error(f"Error mapping text '{selected_text}' to key for '{field_name}'.")
+            return
+
+        # Update the selection and trigger an update
+        if st.session_state.selections[field_name] != new_selection_key:
+            st.session_state.selections[field_name] = new_selection_key
+            st.session_state.selections['preset'] = NONE_PRESET_KEY
+            st.session_state.trigger_update = True
+            st.session_state.last_error = None
+            st.session_state.last_error_preset = None
+
+    return callback
+
+
 def save_covmat_txt(params, covmat):
-    """Format covariance matrix for saving to a text file."""
-    if not COBAYA_LOADED: return ""
     output = io.StringIO()
     str_params = [str(p) for p in params]
     output.write("# " + " ".join(str_params) + "\n")
@@ -187,12 +178,6 @@ def save_covmat_txt(params, covmat):
 def streamlit_gui():
     """Main function for the Streamlit GUI."""
     # Page config is already done!
-
-    # Check again if Cobaya loaded, although st.stop() should prevent reaching here if not.
-    if not COBAYA_LOADED:
-        st.error("Cobaya failed to load. Cannot build GUI.")
-        return # Exit the function
-
     # --- Now proceed with the rest of the GUI setup ---
     st.title("Cobaya Input Generator for Cosmology")
     st.markdown("Generate input files (`info` dictionaries) for cosmological analyses with Cobaya.")
@@ -218,7 +203,6 @@ def streamlit_gui():
     # --- Sidebar for Options ---
     with st.sidebar:
         st.header("Options")
-        manual_selection_changed = False
         for group, fields in _combo_dict_text:
             st.subheader(group)
             for field, desc in fields:
@@ -241,25 +225,13 @@ def streamlit_gui():
                         key="select_preset", on_change=handle_preset_change
                     )
                 else:
-                    selected_text = st.selectbox(
+                    # Create a callback for this specific field
+                    st.selectbox(
                         desc, options=option_texts, index=current_index,
-                        key=f"select_{field}"
+                        key=f"select_{field}", on_change=create_field_callback(field)
                     )
-                    try:
-                        new_selection_key = option_keys[option_texts.index(selected_text)]
-                    except ValueError:
-                         st.error(f"Error mapping text '{selected_text}' to key for '{field}'.")
-                         new_selection_key = st.session_state.selections[field]
 
-                    if st.session_state.selections[field] != new_selection_key:
-                         st.session_state.selections[field] = new_selection_key
-                         manual_selection_changed = True
-                         st.session_state.selections['preset'] = NONE_PRESET_KEY
-
-        if manual_selection_changed:
-            st.session_state.trigger_update = True
-            st.session_state.last_error = None
-            st.session_state.last_error_preset = None
+        # The manual_selection_changed flag is no longer needed as we use callbacks
 
     # --- Main Content Area Logic ---
     if st.session_state.trigger_update:
@@ -395,11 +367,31 @@ def streamlit_gui():
         else:
             st.info("Select a component type and component to view its defaults and bibliography.")
 
-# --- Entry Point ---
+def check_and_install_packages():
+    """Check if packages directory exists and install required packages if needed."""
+    path = resolve_packages_path() or './packages'
+    if not os.path.exists(path):
+        st.info(f"The packages directory does not exist. Running 'cobaya-install -p {path} planck_2018_lensing.native'...")
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["cobaya-install", "-p", path, "planck_2018_lensing.native"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            st.success("Successfully installed required packages.")
+            st.code(result.stdout, language="bash")
+        except subprocess.CalledProcessError as e:
+            st.error(f"Error installing packages: {e}")
+            st.code(e.stderr, language="bash")
+        except FileNotFoundError:
+            st.error("The 'cobaya-install' command was not found. Make sure Cobaya is properly installed.")
+
 def streamlit_gui_script():
     """Entry point for running the Streamlit GUI."""
-    # Optional: warn_deprecation() # If needed
-    streamlit_gui() # Call the main GUI function
+    check_and_install_packages()
+    streamlit_gui()
 
 if __name__ == '__main__':
     streamlit_gui_script() # Run it

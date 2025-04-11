@@ -381,7 +381,8 @@ def check_and_install_packages():
                 check=True
             )
             st.success("Successfully installed required packages.")
-            st.code(result.stdout, language="bash")
+            st.info(result.stdout)
+            st.rerun()
         except subprocess.CalledProcessError as e:
             st.error(f"Error installing packages: {e}")
             st.code(e.stderr, language="bash")
